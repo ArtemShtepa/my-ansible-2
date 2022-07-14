@@ -1,0 +1,13 @@
+---
+version: "2.4"
+
+services:
+  clickhouse_vm:
+    image: centos:7
+    container_name: clickhouse-01
+    tty: true
+  vector_vm:
+    image: centos:7
+    container_name: vector-01
+    tty: true
+...

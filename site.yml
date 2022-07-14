@@ -1,10 +1,22 @@
 ---
+- name: Install sudo and systemctl
+  hosts: all
+  tasks:
+    - name: Install sudo
+      ansible.builtin.yum:
+        name: sudo
+    - name: Install systemctl script
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/gdraheim/docker-systemctl-replacement/master/files/docker/systemctl.py"
+        dest: "/usr/bin/systemctl"
+        mode: +x
 - name: Install Clickhouse
   hosts: clickhouse
   handlers:
     - name: Start clickhouse service
-      become: true
+      # become: true
       ansible.builtin.service:
+        # use: ansible.builtin.systemd
         name: clickhouse-server
         state: restarted
   tasks:
@@ -27,8 +39,10 @@
           - clickhouse-client-{{ clickhouse_version }}.rpm
           - clickhouse-server-{{ clickhouse_version }}.rpm
       notify: Start clickhouse service
+  post_tasks:
     - name: Create database
       ansible.builtin.command: "clickhouse-client -q 'create database logs;'"
       register: create_db
       failed_when: create_db.rc != 0 and create_db.rc !=82
       changed_when: create_db.rc == 0
+...
