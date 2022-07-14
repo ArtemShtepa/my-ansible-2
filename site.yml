@@ -5,11 +5,12 @@
     - name: Install sudo
       ansible.builtin.yum:
         name: sudo
-    - name: Install systemctl script
+    - name: Install systemctl
       ansible.builtin.get_url:
         url: "https://raw.githubusercontent.com/gdraheim/docker-systemctl-replacement/master/files/docker/systemctl.py"
         dest: "/usr/bin/systemctl"
         mode: +x
+      when: ansible_connection == "docker"
 - name: Install Clickhouse
   hosts: clickhouse
   handlers:
@@ -20,17 +21,20 @@
         name: clickhouse-server
         state: restarted
   tasks:
-    - block:
-        - name: Get clickhouse distrib
+    - name: Download clickhouse distrib
+      block:
+        - name: Get clickhouse noarch distrib
           ansible.builtin.get_url:
             url: "https://packages.clickhouse.com/rpm/stable/{{ item }}-{{ clickhouse_version }}.noarch.rpm"
             dest: "./{{ item }}-{{ clickhouse_version }}.rpm"
+            mode: +rw
           with_items: "{{ clickhouse_packages }}"
       rescue:
-        - name: Get clickhouse distrib
+        - name: Get clickhouse static distrib
           ansible.builtin.get_url:
             url: "https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm"
             dest: "./clickhouse-common-static-{{ clickhouse_version }}.rpm"
+            mode: +rw
     - name: Install clickhouse packages
       become: true
       ansible.builtin.yum:
