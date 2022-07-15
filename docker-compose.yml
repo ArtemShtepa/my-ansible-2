@@ -5,9 +5,15 @@ services:
   clickhouse_vm:
     image: centos:7
     container_name: clickhouse-01
+    ports:
+      - "9000:9000"
+      - "8123:8123"
     tty: true
   vector_vm:
     image: centos:7
     container_name: vector-01
+    ports:
+      - "8383:8383"
+      - "8686:8686"
     tty: true
 ...

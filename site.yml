@@ -5,6 +5,7 @@
     - name: Install sudo
       ansible.builtin.yum:
         name: sudo
+      when: ansible_facts['distribution'] == "CentOS"
     - name: Install systemctl
       ansible.builtin.get_url:
         url: "https://raw.githubusercontent.com/gdraheim/docker-systemctl-replacement/master/files/docker/systemctl.py"
@@ -49,4 +50,15 @@
       register: create_db
       failed_when: create_db.rc != 0 and create_db.rc !=82
       changed_when: create_db.rc == 0
-...
+- name: Install Vector
+  hosts: vector
+  tasks:
+    - name: Download distrib
+      ansible.builtin.get_url:
+        url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-x86_64-<< vector_arch }}-musl.tar.gz"
+        dest: "./vector-{{ vector_version }}.tar.gz"
+        mode: +rw
+    - name: Unpack distrib
+      ansible.builtin.unarchive:
+        src:
+        dest:
