@@ -12,14 +12,24 @@
         dest: "/usr/bin/systemctl"
         mode: +x
       when: ansible_connection == "docker"
+      tags:
+        - docker
+    - name: Ensure run directory for ansible check_systemd
+      ansible.builtin.file:
+        name: "/run/systemd/system/"
+        state: directory
+      when: ansible_connection == 'docker'
+      tags:
+        - docker
 - name: Install Clickhouse
   hosts: clickhouse
   handlers:
     - name: Start clickhouse service
-      # become: true
+      become: true
       ansible.builtin.service:
         # use: ansible.builtin.systemd
         name: clickhouse-server
+        enabled: true
         state: restarted
   tasks:
     - name: Download clickhouse distrib
@@ -29,7 +39,7 @@
             url: "https://packages.clickhouse.com/rpm/stable/{{ item }}-{{ clickhouse_version }}.noarch.rpm"
             dest: "./{{ item }}-{{ clickhouse_version }}.rpm"
             mode: +rw
-          with_items: "{{ clickhouse_packages }}"
+          loop: "{{ clickhouse_packages }}"
       rescue:
         - name: Get clickhouse static distrib
           ansible.builtin.get_url:
@@ -44,21 +54,93 @@
           - clickhouse-client-{{ clickhouse_version }}.rpm
           - clickhouse-server-{{ clickhouse_version }}.rpm
       notify: Start clickhouse service
+    - name: Configure clickhouse host bind
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+      loop:
+        - { src: "clickhouse.yml", dest: "/etc/clickhouse-server/config.d/all-hosts.yml" }
+        - { src: "logger.yml", dest: "/etc/clickhouse-server/users.d/logger.yml" }
+      notify: Start clickhouse service
   post_tasks:
+    - name: Bring clickhouse alive if docker restart
+      ansible.builtin.service:
+        name: clickhouse-server
+        state: started
+      when: ansible_connection == "docker"
+      tags:
+        - docker
     - name: Create database
-      ansible.builtin.command: "clickhouse-client -q 'create database logs;'"
+      ansible.builtin.command: "clickhouse-client -q 'CREATE DATABASE logs;'"
       register: create_db
       failed_when: create_db.rc != 0 and create_db.rc !=82
       changed_when: create_db.rc == 0
+      tags:
+        - db
+    - name: Create tables
+      ansible.builtin.command: "clickhouse-client -q 'CREATE TABLE logs.file_log ({{ file_log_structure }}) ENGINE = Log();'"
+      register: create_tbl
+      failed_when: create_tbl.rc != 0 and create_tbl.rc != 57
+      changed_when: create_tbl.rc == 0
+      tags:
+        - db
 - name: Install Vector
   hosts: vector
+  handlers:
+    - name: Start vector service
+      ansible.builtin.service:
+        name: vector
+        enabled: true
+        state: restarted
   tasks:
     - name: Download distrib
       ansible.builtin.get_url:
-        url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-x86_64-<< vector_arch }}-musl.tar.gz"
-        dest: "./vector-{{ vector_version }}.tar.gz"
+        url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-x86_64-unknown-linux-musl.tar.gz"
+        dest: "/vector-{{ vector_version }}.tar.gz"
         mode: +rw
-    - name: Unpack distrib
+    - name: Create vector group
+      ansible.builtin.group:
+        name: vector
+    - name: Create vector user
+      ansible.builtin.user:
+        name: vector
+        group: vector
+    - name: Unpack vector distrib
       ansible.builtin.unarchive:
-        src:
-        dest:
+        src: "/vector-{{ vector_version }}.tar.gz"
+        remote_src: true
+        dest: "/home/vector"
+        extra_opts: [--strip-components=2]
+    - name: Install vector executable
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        remote_src: true
+        dest: "{{ item.dest }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { src: "/home/vector/bin/vector", dest: "/usr/bin/vector", mode: "+x" }
+        - { src: "/home/vector/etc/systemd/vector.service", dest: "/usr/lib/systemd/system/vector.service", mode: "" }
+      notify: Start vector service
+    - name: Create vector directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "vector"
+      loop:
+        - "{{ vector_datadir }}"
+        - "/home/vector/test"
+        - "/etc/vector"
+    - name: Install vector configuration
+      ansible.builtin.template:
+        src: vector.toml.j2
+        dest: "/etc/vector/vector.toml"
+      notify: Start vector service
+  post_tasks:
+    - name: Bring vector alive if docker restart
+      ansible.builtin.service:
+        name: vector
+        state: started
+      when: ansible_connection == "docker"
+      tags:
+        - docker
+...

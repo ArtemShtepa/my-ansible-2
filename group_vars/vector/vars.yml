@@ -1,4 +1,4 @@
 ---
 vector_version: "0.23.0"
-vector_arch: "unknown-linux"
+vector_datadir: "/var/lib/vector"
 ...
