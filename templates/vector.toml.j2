@@ -10,14 +10,14 @@ address = "0.0.0.0:8686"
 [sources.test_log]
 type = "file"
 ignore_older_secs = 600
-include = [ "/home/vector/test/*.log" ]
+include = [ "{{ vector_test_dir }}/*.log" ]
 read_from = "beginning"
 
 [sinks.docker_clickhouse]
 type = "clickhouse"
 inputs = [ "test_log" ]
 database = "logs"
-endpoint = "http://clickhouse-01:8123"
+endpoint = "http://{{ groups['clickhouse'][0] }}:8123"
 table = "file_log"
 compression = "gzip"
 auth = { user = "logger", password = "logger", strategy = "basic" }

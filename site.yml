@@ -1,36 +1,59 @@
 ---
-- name: Install sudo and systemctl
+- name: Generate dynamic inventory
+  gather_facts: false
+  hosts: localhost
+  become: false
+  tasks:
+    - name: Get instances from Yandex.Cloud CLI
+      ansible.builtin.command: "yc compute instance list --format=yaml"
+      register: yc_instances
+      failed_when: yc_instances.rc != 0
+      changed_when: false
+    - name: Set instances to facts
+      ansible.builtin.set_fact:
+        _yc_instances: "{{ yc_instances.stdout | from_yaml }}"
+    - name: Add instances IP to hosts
+      ansible.builtin.add_host:
+        name: "{{ item['network_interfaces'][0]['primary_v4_address']['one_to_one_nat']['address'] }}"
+        group: "{{ item['name'] }}"
+        ansible_ssh_user: "centos"
+      loop: "{{ _yc_instances }}"
+      changed_when: false
+    - name: Check instance count
+      ansible.builtin.debug:
+        msg: "Total instance count: {{ _yc_instances | length }}"
+      failed_when: _yc_instances | length == 0
+- name: Approve SSH fingerprint
+  gather_facts: false
   hosts: all
   tasks:
-    - name: Install sudo
-      ansible.builtin.yum:
-        name: sudo
-      when: ansible_facts['distribution'] == "CentOS"
-    - name: Install systemctl
-      ansible.builtin.get_url:
-        url: "https://raw.githubusercontent.com/gdraheim/docker-systemctl-replacement/master/files/docker/systemctl.py"
-        dest: "/usr/bin/systemctl"
-        mode: +x
-      when: ansible_connection == "docker"
-      tags:
-        - docker
-    - name: Ensure run directory for ansible check_systemd
-      ansible.builtin.file:
-        name: "/run/systemd/system/"
-        state: directory
-      when: ansible_connection == 'docker'
-      tags:
-        - docker
+    - name: Check known_hosts for
+      ansible.builtin.command: ssh-keygen -F {{ inventory_hostname }}
+      register: check_entry_in_known_hosts
+      failed_when: false
+      changed_when: false
+      ignore_errors: true
+      delegate_to: localhost
+    - name: Skip question for adding host key
+      ansible.builtin.set_fact:
+        # StrictHostKeyChecking can be "accept-new"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+      when: check_entry_in_known_hosts.rc == 1
+    - name: Add SSH fingerprint to known host
+      ansible.builtin.setup:
+      when: check_entry_in_known_hosts.rc == 1
 - name: Install Clickhouse
   hosts: clickhouse
   handlers:
     - name: Start clickhouse service
       become: true
       ansible.builtin.service:
-        # use: ansible.builtin.systemd
         name: clickhouse-server
         enabled: true
         state: restarted
+    - name: Pause to get service to active
+      ansible.builtin.pause:
+        seconds: 20
   tasks:
     - name: Download clickhouse distrib
       block:
@@ -55,92 +78,183 @@
           - clickhouse-server-{{ clickhouse_version }}.rpm
       notify: Start clickhouse service
     - name: Configure clickhouse host bind
+      become: true
       ansible.builtin.copy:
         src: "{{ item.src }}"
         dest: "{{ item.dest }}"
+        mode: "0644"
+        owner: "clickhouse"
+        group: "clickhouse"
       loop:
-        - { src: "clickhouse.yml", dest: "/etc/clickhouse-server/config.d/all-hosts.yml" }
-        - { src: "logger.yml", dest: "/etc/clickhouse-server/users.d/logger.yml" }
+        - { src: 'clickhouse.yml', dest: '/etc/clickhouse-server/config.d/all-hosts.yml' }
+        - { src: 'logger.yml', dest: '/etc/clickhouse-server/users.d/logger.yml' }
       notify: Start clickhouse service
   post_tasks:
-    - name: Bring clickhouse alive if docker restart
-      ansible.builtin.service:
-        name: clickhouse-server
-        state: started
-      when: ansible_connection == "docker"
-      tags:
-        - docker
+    - name: Check clickhouse active
+      ansible.builtin.command: "clickhouse-client --host 127.0.0.1 -q 'SHOW DATABASES;'"
+      register: check_db
+      failed_when: check_db.rc != 0
+      changed_when: false
+      retries: 3
+      delay: 5
+      until: check_db.rc == 0
     - name: Create database
-      ansible.builtin.command: "clickhouse-client -q 'CREATE DATABASE logs;'"
+      ansible.builtin.command: "clickhouse-client --host 127.0.0.1 -q 'CREATE DATABASE logs;'"
       register: create_db
       failed_when: create_db.rc != 0 and create_db.rc !=82
       changed_when: create_db.rc == 0
-      tags:
-        - db
     - name: Create tables
-      ansible.builtin.command: "clickhouse-client -q 'CREATE TABLE logs.file_log ({{ file_log_structure }}) ENGINE = Log();'"
+      ansible.builtin.command: "clickhouse-client --host 127.0.0.1 -q 'CREATE TABLE logs.file_log ({{ file_log_structure }}) ENGINE = Log();'"
       register: create_tbl
       failed_when: create_tbl.rc != 0 and create_tbl.rc != 57
       changed_when: create_tbl.rc == 0
-      tags:
-        - db
 - name: Install Vector
   hosts: vector
   handlers:
     - name: Start vector service
+      become: true
       ansible.builtin.service:
-        name: vector
+        name: "vector"
         enabled: true
         state: restarted
   tasks:
     - name: Download distrib
       ansible.builtin.get_url:
         url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-x86_64-unknown-linux-musl.tar.gz"
-        dest: "/vector-{{ vector_version }}.tar.gz"
+        dest: "~/vector-{{ vector_version }}.tar.gz"
         mode: +rw
-    - name: Create vector group
-      ansible.builtin.group:
-        name: vector
-    - name: Create vector user
-      ansible.builtin.user:
-        name: vector
-        group: vector
+    - name: Create distrib directory
+      ansible.builtin.file:
+        path: "~/vector"
+        state: directory
+        mode: "u+rwx,g+r,o+r"
     - name: Unpack vector distrib
       ansible.builtin.unarchive:
-        src: "/vector-{{ vector_version }}.tar.gz"
+        src: "~/vector-{{ vector_version }}.tar.gz"
         remote_src: true
-        dest: "/home/vector"
-        extra_opts: [--strip-components=2]
+        dest: "~/vector"
+        extra_opts: ["--strip-components=2"]
+      register: unpack_res
     - name: Install vector executable
+      become: true
       ansible.builtin.copy:
-        src: "{{ item.src }}"
+        src: "{{ unpack_res['dest'] }}/bin/vector"
         remote_src: true
-        dest: "{{ item.dest }}"
-        mode: "{{ item.mode }}"
-      loop:
-        - { src: "/home/vector/bin/vector", dest: "/usr/bin/vector", mode: "+x" }
-        - { src: "/home/vector/etc/systemd/vector.service", dest: "/usr/lib/systemd/system/vector.service", mode: "" }
+        dest: "/usr/bin/vector"
+        mode: "+x"
       notify: Start vector service
     - name: Create vector directories
+      become: true
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
-        owner: "vector"
+        recurse: true
       loop:
         - "{{ vector_datadir }}"
-        - "/home/vector/test"
         - "/etc/vector"
+    - name: Create test directory
+      ansible.builtin.file:
+        path: "{{ vector_test_dir }}"
+        state: directory
+        mode: "u+rwx,g+rx,o+r"
     - name: Install vector configuration
+      become: true
       ansible.builtin.template:
         src: vector.toml.j2
-        dest: "/etc/vector/vector.toml"
+        dest: "{{ vector_config }}"
+        mode: "0644"
       notify: Start vector service
-  post_tasks:
-    - name: Bring vector alive if docker restart
+    - name: Install vector service file
+      become: true
+      ansible.builtin.template:
+        src: vector.service.j2
+        dest: "/usr/lib/systemd/system/vector.service"
+        mode: "0644"
+    - name: Enable vector service
+      become: true
       ansible.builtin.service:
-        name: vector
+        name: "vector"
+        enabled: true
         state: started
-      when: ansible_connection == "docker"
+- name: Install Lighthouse
+  hosts: lighthouse
+  handlers:
+    - name: Restart nginx
+      become: true
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+  pre_tasks:
+    - name: Install epel-release for centos7
+      become: true
+      ansible.builtin.yum:
+        name: "epel-release"
+        state: present
+      when: ansible_facts['distribution'] == "CentOS"
+    - name: Install NGinX and Git
+      become: true
+      ansible.builtin.package:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - "nginx"
+        - "git"
+  tasks:
+    - name: Check lighthouse files
+      ansible.builtin.file:
+        path: "{{ lighthouse_path }}/app.js"
+        state: file
+      register: lh_exists
+      ignore_errors: true
+    - name: Clone VK Lighthouse
+      become: true
+      ansible.builtin.git:
+        repo: "{{ lighthouse_repo }}"
+        dest: "{{ lighthouse_path }}"
+        version: "{{ lighthouse_branch }}"
+        force: false
+      when: lh_exists.state == "absent"
+    - name: Change lighthouse default host
+      become: true
+      ansible.builtin.replace:
+        path: "{{ lighthouse_path }}/app.js"
+        regexp: '127\.0\.0\.1'
+        replace: "{{ groups['clickhouse'][0] }}"
+    - name: Configure NGinX
+      become: true
+      ansible.builtin.replace:
+        path: "/etc/nginx/nginx.conf"
+        regexp: '/usr/share/nginx/html'
+        replace: "{{ lighthouse_path }}"
+      # ansible.builtin.copy:
+        # src: "lighthouse.conf"
+        # dest: '/etc/nginx/conf.d/lighthouse.conf'
+        # owner: "nginx"
+      notify: Restart nginx
+    - name: Restore NGinX configuration
+      become: true
+      ansible.builtin.replace:
+        path: "/etc/nginx/nginx.conf"
+        regexp: "{{ lighthouse_path }}"
+        replace: '/usr/share/nginx/html'
       tags:
-        - docker
+        - never
+    - name: Enable NGinX autostart
+      become: true
+      ansible.builtin.service:
+        name: "nginx"
+        enabled: true
+        state: started
+- name: Echo instances hint
+  hosts: localhost
+  tasks:
+    - name: Clickhouse IP
+      ansible.builtin.debug:
+        msg: "Clickhouse IP: {{ groups['clickhouse'][0] }}"
+    - name: Vector IP
+      ansible.builtin.debug:
+        msg: "Vector IP    : {{ groups['vector'][0] }}"
+    - name: Lighthouse IP
+      ansible.builtin.debug:
+        msg: "Clickhouse IP: {{ groups['lighthouse'][0] }}"
 ...
