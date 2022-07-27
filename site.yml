@@ -51,9 +51,6 @@
         name: clickhouse-server
         enabled: true
         state: restarted
-    - name: Pause to get service to active
-      ansible.builtin.pause:
-        seconds: 20
   tasks:
     - name: Download clickhouse distrib
       block:
