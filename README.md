@@ -7,14 +7,14 @@
 
 Для настройки хостов предварительно подготовлены статические файлы:
 - Настройки **Clickhouse** для подключения со всех хостов: [files/clickhouse.yml](files/clickhouse.yml)
-- Настройка пользователя **logger** для СУБД **Clickhouse**: [files/logger.xml](files/logger.xml)
+- Настройка пользователя **logger** для СУБД **Clickhouse**: [files/logger.yml](files/logger.yml)
 - Настройка web сервера **Lighthouse** для демона **nginx**: [files/lighthouse.conf](files/lighthouse.conf)
 
 А также шаблоны:
 - Настройки **Vector** как сервиса: [templates/vector.service.j2](templates/vector.service.j2)
 - Конфигурационный файл **Vector** с настройков хоста **Clickhouse**: [templates/vector.toml.j2](templates/vector.toml.j2)
 
-Доступные следующие переменные:
+Доступны следующие переменные:
 - `clickhouse_version` - Версия **Clickhouse**, которая будет использоваться ([group_vars/clickhouse.yml](group_vars/clickhouse.yml))
 - `clickhouse_packages` - Список пакетов, которые нужно скачать и установить для функционирования **Clickhouse** ([group_vars/clickhouse.yml](group_vars/clickhouse.yml))
 - `file_log_structure` - Структура таблицы, в которую будут сохраняться данные метрик от **Vector** ([group_vars/clickhouse.yml](group_vars/clickhouse.yml))
@@ -64,6 +64,8 @@ lighthouse:
 Успешность определяется кодом возврата (`yc_instances.rc`).
 Считается, что данный шаг может быть либо `ok`, либо `failed`
 
+---
+
 На следующем шаге выполняется преобразование вывода комманды **Yandex.Cloud CLI** в блок **YAML**
 ```yaml
     - name: Set instances to facts
@@ -72,7 +74,9 @@ lighthouse:
 ```
 Результат фиксируется в фактах с именем `_yc_instances`
 
-Далее выполняется добавление хостов из `_yc_instances` для соответствующих групп
+---
+
+Далее для каждого элемента из `_yc_instance` выполняется добавление хоста в группу на основе имени машины (`group: "{{ item['name'] }}"`)
 ```yaml
     - name: Add instances IP to hosts
       ansible.builtin.add_host:
@@ -82,7 +86,10 @@ lighthouse:
       loop: "{{ _yc_instances }}"
       changed_when: false
 ```
-При этом используется модуль `ansible.builtin.add_host` где в качестве группы передаётся название хоста. А также устанавливается пользователь для подключения по SSH.
+При этом используется модуль `ansible.builtin.add_host` где в качестве группы передаётся название хоста. А также устанавливается пользователь (`ansible_ssh_user`) для подключения по SSH.
+Считается, что шаг всегда завершается со статусом `ok`.
+
+---
 
 Последний шаг служит индикатором успеха формирования динамического **inventory** на основе числа полученных **instance**
 ```yaml
